@@ -1,0 +1,175 @@
+We will be creating a Red Teaming as a Code Project here. 
+The Purple framework that we will be implementing is Meta's' Purple Llama - an Open-Source suite designed specifically for AI Security, encompassing both offensive (red team) and defensive (blue team) evaluations. It includes tools like CyberSecEval for quantifying LLM Security risks and Code Shield for filtering insecure code generation.
+Combinng this with #OpenClaw, #OpenBot, #LiteLLM and #vLLM 
+gives me a formidable, cutting-edge stack that perfectly supports both of my tracks for Red teaming and Educational Games.
+
+Brainstorming:
+1. Red Teaming as a Code:
+* The Workflow: We will build an Automated GitOps pipline where AI Agents continuously attack and evaluate an environment.
+* The Stack in Action: An OpenClaw Agent acts as the autonomous attacker, generating payloads and exploiting vulnerabilities. It routes its API calls through liteLLM, which acts as our security gateway and audit log. The attacks are executed inside an OpenBot sandboxed container, preventing the red-team Agent from breaking out into our actual host machine. Finally, Purple Llama evaluates the attack data to generate a Security posture report.
+
+2. Educational Interactive Games:
+* The Workflow: Conversational, interactive tutors that can safely run code or browse the web alongside the student.
+* The Stack in Action: OpenClaw interfaces with my users via messaging platforms like Discord or WhatsApp). When a student needs to test Python code or View a Live Web interaction, OpenBot provisions a highly secure, ephemeral workspace for the Agent to demonstrate the lesson.
+
+Architecture (Initial):
+1. Local Control Plane (WSL2 +k3s): Install K3s inside WSL2. I will deploy my core MicroServices here: OpenClaw, OpenBot and LiteLLM.
+2. Local Inference (vLLM via WSL2): I will run smaller, highly quantized models (like Llama-3-8B-Instruct AWQ) locally on my laptop's' GPU using vLLM for lightweight routing and Agent Logic.
+3. Cloud Bursting (LiteLLM Routing): For heavy lifting (e.g. Generating complex code or running intensive Purple Llama evals), i will configure LiteLLM to route specific requests out to low-cost serverless GPU providers (like Hugging Face Inference Endpoints or RunPods).
+
+Cost Breakdown:
+If i try to host entire Kubernetes cluster in the cloud with dedicated GPU nodes, i will tend to be spending $300 to $600 per month, (thats huge), hence let me try to do a hybrid model that could slash the cost.
+* K8s cluster & Gateway (LiteLLM, OpenBot, OpenClaw) on Local WSL2 (k3s) on my laptop - Costs $0
+* Lightweight AI Inference (Routing, basic chat) on Local WSL2 (vLLM) using my laptop's' GPU - Costs me $0
+* Heavy AI Inference (Red Teaming models, Purple Llama) on a Serverless GPU (RunPod or Together AI) routed via local LLM. Now this will cost me $50 for my Per hour of Compute / tokens used.
+
+Below are the Requirements:
+1. Hardware & OS Baseline:
+To run multiple AI Agents and a Kubernetes cluster siultaneiusly, my host machine requires specific tuning.
+* Base OS: Windows 11 with Windows Subsystem for Linux 2 (WSL2) running on Ubuntu 24.04 distribution.
+* RAM Allocation: I must create a .wslconfig file in my Windows User Directory to hard-cap WSL2 memory usage (E.g. 24 GB). Without this limit, the AI models and k8s overhead will consume all available memory and crash Windows.
+* GPU Constraints: My Laptop has VRAM. I cannot run uncompressed 8B models. I will require a 4-bit AWQ or GPTQ quantized models (which consume roughly 5.5 GB to 6 GB VRAM) to leave overhead for the OS.
+* Storage: A minimum of 200 GB of NVMe SSD space dedicated to the WSL2 virtual disk (.vhdx). AI model weights and container images consume space rapidly.
+
+2. Infrastructure & Orchestration: 
+I need a localized, lightweight control plane that can access the GPU.
+* Cluster Engine (k3s): A single-binary Kubernetes distribution designed for the edge environments. It consumes less than 512 MB of RAM, making it vastly superior to Minikube or Full K8s for local deployments.
+* GPU Passthrough Stack:
+  * The standard Windows Nvidia drivers automatically pass WDDM capabilities to WSL2.
+  * The Nvidia Container Toolkit must be installed inside the Ubuntu WSL2 instance.
+  * The Nvidia Device Plugin (k8s-device-plugin DaemonSet) must be depoloyed into k3s to allow my pods to request limits: [nvidia.com/gpu](https://nvidia.com/gpu): 1.
+
+3. The Inference & Routing Layer:
+This will be acting as the brain, separating local processing from heavy-duty cloud bursting.
+* vLLM (Local Inference Engine): Deployed as a K8s Deployment. It serves our quantized models (e.g. Meta-Llama-3-8B-Instruct-AWQ) locally.
+* Hugging Face Hub Integration: I must create a Kubernetes Secret containing my HF_TOKEN. This allows the vLLM pod to authenticate and pull gated models directly from Hugging Face into a Persistent Volume (PV). Mounting a PV to /.cache/huggingface ensures my cluster doesn't re-download a 5GB model every time the pod restarts.
+* LiteLLM (The Gateway): Deployed as a K8s Service. This is my traffic controller. Through a config.yaml ConfiMap, LiteLLM intercepts all API calls and routes lightweight chat/game tasks to my local vLLM pod, while routing heavy tasks (like Purple Llama red-team evaluations) to a serverless cloud provider.
+
+4. The Agent Execution Enironment:
+This is where my both my concepts - Educational Games and Red Teaming - actually Execute!!!! Yayyy!!!!
+* OpenClaw (The Automator): Deployed as a persistent daemon pod. OpenClaw connects to my GitHub account via a Fine-Grained PAT (stored as K8s Secret). For my CS idea, this Agent Monitors Repositories and Autonomously Triggers Red Teaming pipelines.
+* OpenBot (The Secure Sandbox): OpenBot provisions isolated workspaces, file systems and browsers for AI Agents.
+  * Critical Requirements: Because i am executing malicious red-team payloads and running untrusted Python Code from students, OpenBot's' containers must be isolated using gVisor (runsc). This provides a secure sandbox that prevents Agent breakouts into my host k3s cluster.
+
+5. Security & Evaluation (Purple Llama):
+Purple Llama is a framework that will act as the Judge and filter for our stack.
+* Llama Guard: Placed in front of the educational interactive games via LiteLLM routing. It acts as a input/output filter to ensure students do not prompt-inject the tutor or generate unsage contents.
+* CyberSecEval: Integrated into the OpenClaw Red Teaming pipeline. After OpenClaw generates and executes a payload against a target environment (inside the OpenBot sandbox), CyberSecEval quantiies the exploit's' success and generates my Red Teaming as Code posture Report.
+
+Issues that i have identified:
+* I will be running offensive red-team payloads and untrusted student code on the same k3s cluster that hosts my control plane (OpenClaw, LiteLLM, the GitHub PAT, the HF token). 
+* gVisor on OpenBot is a good layer, but it's one layer, and i have explicitly stated the threat model myself - "executing malicious red-team payloads." 
+* The entire premise of the project is that things inside the sandbox are hostile. 
+* Defense-in-depth means the sandbox is not the only thing between a hostile payload and my GitHub PAT.
+
+Changes to be considered:
+* Separate the execution plane from the control plane. 
+* At minimum a dedicated k3s node (or a second lightweight VM) that runs only OpenBot sandboxes, with its own namespace, a locked-down NetworkPolicy (default-deny egress, allow-list only LiteLLM and the target), and no access to the secrets namespace. 
+* The control plane - OpenClaw, LiteLLM, secrets - lives elsewhere and the payload plane can't reach it laterally.
+* NetworkPolicies are not optional here, and k3s doesn't enforce them out of the box. k3s ships Flannel, which ignores NetworkPolicy. 
+* I need to install a CNI that enforces it (Calico, or Cilium) or my "isolation" is namespace-labelling with no teeth. 
+* This is the same class of lesson as DPv2 pod-egress i have hit before - the policy object existing isn't the same as the dataplane enforcing it.
+* The GitHub PAT is my crown jewel and it's one breakout away from the payload plane. 
+* Scope it to a single throwaway target repo, fine-grained, minimum permissions, short expiry - never a PAT that can touch anything i care about. 
+* I have to consider a dedicated GitHub org for this project so the blast radius is contained by GitHub's own boundary, not just token scope.
+
+Verify these before i start to build 
+I want to flag these rather than assert them, because I can't confirm the tools from here — check each on its actual project page before committing architecture to it:
+* "OpenClaw" and "OpenBot" - confirm these are the real project names. I'm not certain these exist under those names; you may be thinking of specific tools (there are agent frameworks and sandboxing projects these could map to). 
+* Whatever the actual tools are, verify: does the sandbox actually support gVisor/runsc, and does the agent framework actually run as a Kubernetes daemon the way i have drawn it? 
+* The architecture leans hard on both behaviors. 
+* If a name is slightly off, better to find out now than after i have built around an assumed capability.
+* gVisor under WSL2 is the risk I'd test first, before anything else. 
+* gVisor (runsc) intercepts syscalls, and it has historically been finicky about nested virtualization and kernel features - WSL2 is itself a VM with a custom kernel. 
+* "gVisor runs cleanly inside WSL2 k3s with GPU passthrough" is an assumption my whole isolation story rests on. 
+* Spend the first day proving runsc starts a container under WSL2 at all. 
+* If it doesn't, my fallback (a dedicated VM per execution, or Kata Containers) changes the architecture, so i want to know on day one.
+* GPU + gVisor together is a known hard combination. 
+* gVisor's GPU support (nvproxy) is relatively recent and limited. 
+* If my red-team or eval payloads need GPU inside the sandbox, test that specific combination early - it may not work, in which case GPU workloads run in the (trusted) inference plane only and sandboxes stay CPU-only, which is actually a cleaner design anyway.
+
+Smaller improvements, ranked by value
+* Llama Guard belongs on both tracks, not just the games. 
+* I have placed it in front of the educational tutor (correct - students will prompt-inject it). 
+* But put it on the red-team track's outputs too, as the audit boundary: it's what lets you demonstrate the pipeline generated something genuinely dangerous vs. benign, which is half your posture report's credibility.
+* Persist the results, not just the models. 
+* I have got a PV for HF model cache (good). 
+* Add a PV - or better, a small Postgres - for CyberSecEval results and attack history. 
+* "Red teaming as code" implies trend over time: is our posture improving across runs? 
+* That needs stored history, and it's the thing that makes the output a report rather than a one-shot.
+* LiteLLM as "security gateway and audit log" - make the audit real. 
+* LiteLLM logs, but wire it to actually persist request/response logs somewhere durable and enable its guardrails hooks. 
+* The claim "LiteLLM is our audit log" is only true if i turn that on and ship it off-box; otherwise it's logs that die with the pod.
+* Define the target environment explicitly. 
+* The design says the agent attacks "an environment" but never says what. 
+* That's the most important undefined piece - a deliberately vulnerable app (OWASP Juice Shop, DVWA, or a purpose-built vulnerable API) deployed as a pod in the execution namespace. 
+* Name it and version it, because it's what makes results reproducible.
+* The two tracks are more separable than the doc treats them. 
+* Red-teaming (autonomous, offensive, GitOps-triggered) and educational games (interactive, defensive, chat-fronted) share a stack but have opposite trust postures. 
+* I will have to consider building them as two deployments on the shared platform rather than one intertwined system - it keeps a student session from ever sharing a namespace with an offensive payload, and lets me demo one without the other.
+
+Architecure Diagram:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  WINDOWS 11 HOST                                                              │
+│  .wslconfig → hard-cap 24 GB RAM  ·  NVIDIA WDDM driver → WSL2 GPU           │
+│                                                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │  WSL2 · Ubuntu 24.04 · 200 GB .vhdx                                     │ │
+│  │                                                                         │ │
+│  │  ┌─────────────────────────────────────────────────────────────────┐  │ │
+│  │  │  k3s   (CNI = Calico/Cilium — NetworkPolicy ENFORCED)            │  │ │
+│  │  │  NVIDIA Container Toolkit + k8s-device-plugin (DaemonSet)         │  │ │
+│  │  │                                                                   │  │ │
+│  │  │  ══════════ CONTROL PLANE (trusted) ══════════════════════════   │  │ │
+│  │  │  namespace: control                                              │  │ │
+│  │  │   ┌──────────────┐   ┌───────────────────────────────────────┐  │  │ │
+│  │  │   │  OpenClaw*    │   │  LiteLLM  (gateway + audit + guard)    │  │  │ │
+│  │  │   │  agent daemon │──▶│  config.yaml ConfigMap                 │  │  │ │
+│  │  │   │  GitHub PAT   │   │  ┌─ light/chat  ─────▶ local vLLM      │  │  │ │
+│  │  │   │  (Secret,     │   │  ├─ Llama Guard (in/out filter)        │  │  │ │
+│  │  │   │   min-scope)  │   │  └─ heavy/eval ───────▶ CLOUD BURST    │  │  │ │
+│  │  │   └──────┬───────┘   └──────┬────────────────────────┬────────┘  │  │ │
+│  │  │          │                  │                         │           │  │ │
+│  │  │          │            ┌─────▼──────────┐              │           │  │ │
+│  │  │          │            │  vLLM Deploy   │              │           │  │ │
+│  │  │          │            │  AWQ 8B model  │  GPU: 1      │           │  │ │
+│  │  │          │            │  PV: /hf-cache │  HF_TOKEN    │           │  │ │
+│  │  │          │            └────────────────┘  (Secret)   │           │  │ │
+│  │  │          │                                            │           │  │ │
+│  │  │  ═══ ▼ EXECUTION PLANE (UNTRUSTED — isolate) ═══      │           │  │ │
+│  │  │  namespace: execution                                │           │  │ │
+│  │  │  NetworkPolicy: default-deny egress;                 │           │  │ │
+│  │  │    allow →LiteLLM, →target only;  NO →control        │           │  │ │
+│  │  │   ┌──────────────────────────────────────────────┐  │           │  │ │
+│  │  │   │  OpenBot* — sandbox provisioner               │  │           │  │ │
+│  │  │   │  containers run under gVisor (runsc)          │  │           │  │ │
+│  │  │   │  ┌────────────────┐   ┌────────────────────┐  │  │           │  │ │
+│  │  │   │  │ RED-TEAM pod   │   │ STUDENT pod        │  │  │           │  │ │
+│  │  │   │  │ payload exec   │   │ ephemeral py/web   │  │  │           │  │ │
+│  │  │   │  └───────┬────────┘   └────────────────────┘  │  │           │  │ │
+│  │  │   │          │ attacks                            │  │           │  │ │
+│  │  │   │   ┌──────▼─────────┐                          │  │           │  │ │
+│  │  │   │   │ TARGET (vuln   │  ← define explicitly     │  │           │  │ │
+│  │  │   │   │ app: JuiceShop)│                          │  │           │  │ │
+│  │  │   │   └────────────────┘                          │  │           │  │ │
+│  │  │   └──────────────────────────────────────────────┘  │           │  │ │
+│  │  │                                                       │           │  │ │
+│  │  │  ═══ EVALUATION ═══                                   │           │  │ │
+│  │  │   ┌────────────────────────────────────┐             │           │  │ │
+│  │  │   │ Purple Llama · CyberSecEval         │             │           │  │ │
+│  │  │   │ scores attacks → posture report     │             │           │  │ │
+│  │  │   │ PV/Postgres: result history (trend) │             │           │  │ │
+│  │  │   └────────────────────────────────────┘             │           │  │ │
+│  │  └───────────────────────────────────────────────────────┼──────────┘  │ │
+│  └─────────────────────────────────────────────────────────┼─────────────┘ │
+└────────────────────────────────────────────────────────────┼───────────────┘
+                                                               │
+                          ┌────────────────────────────────────▼──────────┐
+                          │  CLOUD BURST (serverless GPU, pay-per-use)     │
+                          │  RunPod / Together AI / HF Endpoints           │
+                          │  heavy code-gen · Purple Llama evals           │
+                          └────────────────────────────────────────────────┘
+
+ GitOps trigger:  GitHub repo ──(webhook/poll)──▶ OpenClaw ──▶ red-team pipeline
+ * OpenClaw / OpenBot: verify real tool names + gVisor & daemon support before building
+

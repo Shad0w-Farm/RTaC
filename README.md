@@ -1,5 +1,5 @@
 # RTaC
-Red Team as Code
+Red Team as Code aaS
 
    ## Documentation
    - [Architecture](docs/architecture.md) — high- and low-level design, trust boundaries
